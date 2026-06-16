@@ -7,6 +7,7 @@ from app.api.videos import router as videos_router
 from app.database.db import engine, Base
 
 from app.database import models
+from app.api import reports
 
 
 Base.metadata.create_all(bind=engine)
@@ -28,6 +29,7 @@ app.add_middleware(
 app.include_router(health_router)
 app.include_router(analytics_router)
 app.include_router(videos_router)
+app.include_router(reports.router)
 
 
 @app.get("/")

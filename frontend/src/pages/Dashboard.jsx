@@ -149,6 +149,18 @@ export default function Dashboard() {
     });
   };
 
+  const downloadPdfReport = () => {
+    if (!summary?.video_id) {
+      alert("No video report available yet");
+      return;
+    }
+
+    window.open(
+      `http://127.0.0.1:8000/reports/pdf/${summary.video_id}`,
+      "_blank",
+    );
+  };
+
   // Density value formatter
   const formatDensity = (density) => {
     if (typeof density === "number") {
@@ -197,6 +209,12 @@ export default function Dashboard() {
         </div>
 
         <div className="flex items-center gap-3">
+          <button
+            onClick={downloadPdfReport}
+            className="px-4 py-2 bg-red-600 text-white rounded-lg text-xs font-medium hover:bg-red-700 transition"
+          >
+            📄 Download PDF
+          </button>
           {/* Refresh Control */}
           <select
             value={refreshInterval}
