@@ -34,7 +34,7 @@ def upload_video(file: UploadFile = File(...)):
 
 
 @router.post("/process/{filename}")
-def process_video(filename: str):
+def process_video(filename: str, road_mode: str = "two_way"):
     input_path = UPLOAD_DIR / filename
 
     if not input_path.exists():
@@ -49,6 +49,7 @@ def process_video(filename: str):
         model_path="models/best.pt",
         input_video=str(input_path),
         output_video=str(output_path),
+        road_mode=road_mode,
     )
 
     processor.process()

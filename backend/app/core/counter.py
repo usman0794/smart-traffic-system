@@ -1,5 +1,5 @@
 class VehicleCounter:
-    def __init__(self, line_position_ratio=0.6):
+    def __init__(self, line_position_ratio=0.6, road_mode="two_way"):
         # IDs of vehicles already counted
         self.counted_ids = set()
 
@@ -25,6 +25,7 @@ class VehicleCounter:
 
         # Count line position, e.g. 0.6 = 60% height
         self.line_position_ratio = line_position_ratio
+        self.road_mode = road_mode
 
     def get_center(self, bbox):
         # Bounding box format: [x1, y1, x2, y2]
@@ -67,7 +68,10 @@ class VehicleCounter:
 
                 # Count only once
                 if track_id not in self.counted_ids and (crossed_down or crossed_up):
-                    direction = "incoming" if crossed_down else "outgoing"
+                    if self.road_mode == "one_way":
+                        direction = "incoming"
+                    else:
+                        direction = "incoming" if crossed_down else "outgoing"
 
                     # Mark as counted
                     self.counted_ids.add(track_id)

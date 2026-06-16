@@ -23,6 +23,7 @@ class VideoProcessor:
         model_path="models/best.pt",
         input_video="videos/test.mp4",
         output_video="outputs/output.mp4",
+        road_mode="two_way",
     ):
         # Custom YOLO model path
         self.model_path = model_path
@@ -30,6 +31,7 @@ class VideoProcessor:
         # Input and output video paths
         self.input_video = input_video
         self.output_video = output_video
+        self.road_mode = road_mode
 
         # Core CV modules
         self.detector = VehicleDetector(model_path=self.model_path)
@@ -37,15 +39,18 @@ class VideoProcessor:
         self.density = TrafficDensity()
 
         # Speed optimization settings
-        # Process every 5th frame only
-        self.frame_skip = 5
+        # Process frame only
+        self.frame_skip = 10
 
         # Resize video frame before YOLO inference
-        self.resize_width = 640
+        self.resize_width = 512
 
     def process(self):
         # Fresh counter for every new uploaded video
-        counter = VehicleCounter(line_position_ratio=0.6)
+        counter = VehicleCounter(
+            line_position_ratio=0.6,
+            road_mode=self.road_mode
+        )
 
         # Open input video
         cap = cv2.VideoCapture(self.input_video)
@@ -89,6 +94,9 @@ class VideoProcessor:
             )
             video_id = video.id
             print(f"Video Record Created: {video_id}")
+
+            # Save each accident track only once
+            saved_accident_ids = set()
 
             while True:
                 # Read next frame
@@ -174,7 +182,7 @@ class VideoProcessor:
                     box_color = (0, 0, 255) if class_name == "accident" else (0, 255, 0)
 
                     # Save accident event to database
-                    if class_name == "accident":
+                    if class_name == "accident" and track_id not in saved_accident_ids:
                         save_accident_event(
                             db=db,
                             video_id=video_id,
@@ -183,6 +191,8 @@ class VideoProcessor:
                             frame_number=frame_id,
                             bbox=[x1, y1, x2, y2],
                         )
+
+                        saved_accident_ids.add(track_id)
 
                     # Draw bounding box
                     cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
@@ -207,7 +217,7 @@ class VideoProcessor:
                 class_counts = count_result["class_counts"]
 
                 # Save traffic snapshot every 100 frames
-                if frame_id % 100 == 0:
+                if frame_id % 200 == 0:
                     save_snapshot(
                         db=db,
                         video_id=video_id,
