@@ -1,13 +1,18 @@
+import torch
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
 
 class VehicleTracker:
     def __init__(self):
-        # Optimized DeepSORT settings for faster CPU processing
+        # Run the appearance embedder on GPU when available
+        use_gpu = torch.cuda.is_available()
+
+        # DeepSORT settings (GPU-accelerated embedder)
         self.tracker = DeepSort(
-            max_age=15,           # Keep track for fewer frames if detection is missed
-            n_init=1,             # Confirm track after 1 detection for speed
-            max_iou_distance=0.7  # Matching threshold
+            max_age=15,            # Keep track for fewer frames if detection is missed
+            n_init=2,              # Confirm track after 2 detections (fewer false tracks)
+            max_iou_distance=0.7,  # Matching threshold
+            embedder_gpu=use_gpu   # Run the appearance model on the GPU
         )
 
     def update(self, detections, frame=None):

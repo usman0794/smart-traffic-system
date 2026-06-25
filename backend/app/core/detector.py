@@ -1,3 +1,4 @@
+import torch
 from ultralytics import YOLO
 
 
@@ -11,6 +12,10 @@ class VehicleDetector:
 
         # Load YOLO model
         self.model = YOLO(self.model_path)
+
+        # Use GPU if available, otherwise fall back to CPU
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model.to(self.device)
 
         # Classes allowed in our traffic system
         self.allowed_classes = {
@@ -27,6 +32,8 @@ class VehicleDetector:
             frame,
             conf=self.confidence,
             imgsz=640,
+            device=self.device,
+            half=(self.device == "cuda"),  # FP16 is much faster on the T4 GPU
             verbose=False
         )[0]
 

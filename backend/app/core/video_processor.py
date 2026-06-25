@@ -40,10 +40,10 @@ class VideoProcessor:
 
         # Speed optimization settings
         # Process frame only
-        self.frame_skip = 10
+        self.frame_skip = 2
 
         # Resize video frame before YOLO inference
-        self.resize_width = 512
+        self.resize_width = 640
 
     def process(self):
         # Fresh counter for every new uploaded video
