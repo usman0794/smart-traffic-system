@@ -305,20 +305,22 @@ class VideoProcessor:
             writer.release()
             db.close()
 
-    def generate_frames(self, stream_width=640, jpeg_quality=60, show_every=1):
+    def generate_frames(self, stream_width=960, jpeg_quality=75, show_every=1):
         """
-        REAL-TIME live MJPEG generator (speed optimized).
+        BALANCED real-time live MJPEG generator.
 
-        Key differences vs process() to keep the feed fast and live:
-          * Works entirely at a small stream resolution (default 640px wide),
-            so detection AND JPEG encoding are both cheap.
-          * Encodes lower-quality JPEGs (default quality 60) => far fewer bytes
-            to push across the network.
-          * Does NO database writes inside the loop, so Neon network latency
-            never stalls a frame. (The 'Process Video' button still saves
-            everything to the DB via process().)
-          * 'show_every' lets you drop frames so the feed stays current
-            instead of falling behind real time.
+        Goal: look good (full overlay, decent resolution) but stay fast.
+          * stream_width=960 + jpeg_quality=75 -> sharp enough, still small.
+          * Full overlay restored (all vehicle classes), like the saved video.
+          * NO database writes inside the loop -> Neon latency never stalls a
+            frame. (The 'Process Video' button still saves everything.)
+          * Generator stops cleanly when the browser disconnects (GeneratorExit
+            in the finally block), so it never keeps churning in the background.
+          * show_every>1 drops frames if you want it even more 'live'.
+
+        Tune from the endpoint, e.g.:
+          generate_frames(stream_width=1280, jpeg_quality=85)  # higher quality
+          generate_frames(stream_width=640, jpeg_quality=60, show_every=2)  # faster
         """
         # Fresh counter for every new stream
         counter = VehicleCounter(
@@ -332,14 +334,14 @@ class VideoProcessor:
         if not cap.isOpened():
             raise FileNotFoundError(f"Could not open video: {self.input_video}")
 
-        # Original size -> compute small stream size (keep aspect ratio)
+        # Original size -> compute stream size (keep aspect ratio)
         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         if orig_w == 0:
             orig_w = stream_width
         stream_height = int(orig_h * (stream_width / orig_w)) or stream_width
 
-        # JPEG encode params (lower quality = smaller = faster over network)
+        # JPEG encode params (quality vs size tradeoff)
         jpeg_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)]
 
         # Counters and timers
@@ -362,12 +364,11 @@ class VideoProcessor:
 
                 frame_id += 1
 
-                # Downscale immediately -> everything below is cheap
+                # Downscale once -> all work below is on the small frame
                 frame = cv2.resize(frame, (stream_width, stream_height))
 
                 # Run YOLO + DeepSORT every N frames; reuse results otherwise
                 if frame_id % self.frame_skip == 0:
-                    # Detection runs directly on the small frame (no rescaling)
                     detections = self.detector.detect(frame)
 
                     tracked_objects = self.tracker.update(detections, frame=frame)
@@ -386,7 +387,7 @@ class VideoProcessor:
                     density_level = last_density_level
                     active_vehicles = len(tracked_objects)
 
-                # Frame dropping: only stream every Nth frame to stay live
+                # Optional frame dropping to stay live
                 if show_every > 1 and frame_id % show_every != 0:
                     continue
 
@@ -402,7 +403,7 @@ class VideoProcessor:
                         )
                     continue
 
-                # Draw count line (coords already in stream resolution)
+                # Draw count line
                 line_y = count_result["line_y"]
                 cv2.line(frame, (0, line_y), (stream_width, line_y), (0, 255, 255), 2)
 
@@ -420,9 +421,9 @@ class VideoProcessor:
                     cv2.putText(
                         frame,
                         label,
-                        (x1, max(y1 - 8, 16)),
+                        (x1, max(y1 - 10, 20)),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
+                        0.6,
                         box_color,
                         2,
                     )
@@ -433,29 +434,34 @@ class VideoProcessor:
 
                 class_counts = count_result["class_counts"]
 
-                # Compact overlay
-                y = 24
-                gap = 24
+                # FULL overlay (same info as the saved video)
+                y = 40
+                gap = 35
                 overlay_items = [
                     f"Total: {count_result['total_count']}",
-                    f"In: {count_result['incoming_count']}  Out: {count_result['outgoing_count']}",
+                    f"Incoming: {count_result['incoming_count']}",
+                    f"Outgoing: {count_result['outgoing_count']}",
+                    f"Cars: {class_counts['car']}",
+                    f"Trucks: {class_counts['truck']}",
+                    f"Buses: {class_counts['bus']}",
+                    f"Motorcycles: {class_counts['motorcycle']}",
                     f"Density: {density_level}",
-                    f"FPS: {processing_fps:.1f}",
+                    f"FPS: {processing_fps:.2f}",
                 ]
 
                 for item in overlay_items:
                     cv2.putText(
                         frame,
                         item,
-                        (12, y),
+                        (20, y),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
+                        0.8,
                         (255, 255, 255),
                         2,
                     )
                     y += gap
 
-                # Encode the annotated small frame as a low-quality JPEG
+                # Encode and yield
                 ok, buffer = cv2.imencode(".jpg", frame, jpeg_params)
                 if not ok:
                     continue
@@ -467,11 +473,14 @@ class VideoProcessor:
                     + b"\r\n"
                 )
 
-            print("Live stream finished")
+        except GeneratorExit:
+            # Browser disconnected / stopped watching -> stop immediately
+            print("Live viewer disconnected - stopping stream")
 
         finally:
-            # No DB session opened in live mode -> just release the capture
+            # No DB session in live mode -> just release the capture
             cap.release()
+            print("Live stream released")
 
 
 if __name__ == "__main__":
