@@ -305,12 +305,20 @@ class VideoProcessor:
             writer.release()
             db.close()
 
-    def generate_frames(self):
+    def generate_frames(self, stream_width=640, jpeg_quality=60, show_every=1):
         """
-        Live MJPEG generator: runs the same detection/tracking/counting
-        pipeline as process(), but instead of writing a file it YIELDS each
-        annotated frame as a JPEG for real-time streaming. Vehicle events and
-        snapshots are still saved to the database.
+        REAL-TIME live MJPEG generator (speed optimized).
+
+        Key differences vs process() to keep the feed fast and live:
+          * Works entirely at a small stream resolution (default 640px wide),
+            so detection AND JPEG encoding are both cheap.
+          * Encodes lower-quality JPEGs (default quality 60) => far fewer bytes
+            to push across the network.
+          * Does NO database writes inside the loop, so Neon network latency
+            never stalls a frame. (The 'Process Video' button still saves
+            everything to the DB via process().)
+          * 'show_every' lets you drop frames so the feed stays current
+            instead of falling behind real time.
         """
         # Fresh counter for every new stream
         counter = VehicleCounter(
@@ -324,9 +332,15 @@ class VideoProcessor:
         if not cap.isOpened():
             raise FileNotFoundError(f"Could not open video: {self.input_video}")
 
-        # Get video properties
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        # Original size -> compute small stream size (keep aspect ratio)
+        orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if orig_w == 0:
+            orig_w = stream_width
+        stream_height = int(orig_h * (stream_width / orig_w)) or stream_width
+
+        # JPEG encode params (lower quality = smaller = faster over network)
+        jpeg_params = [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)]
 
         # Counters and timers
         frame_id = 0
@@ -337,25 +351,7 @@ class VideoProcessor:
         last_count_result = None
         last_density_level = "Low"
 
-        # Database session
-        db = SessionLocal()
-        video_id = None
-
         try:
-            # Create video record in database
-            video = create_video(
-                db=db,
-                filename=Path(self.input_video).name,
-                source_type="upload",
-                status="processing",
-                model_used=Path(self.model_path).name,
-            )
-            video_id = video.id
-            print(f"Live Video Record Created: {video_id}")
-
-            # Save each accident track only once
-            saved_accident_ids = set()
-
             while True:
                 # Read next frame
                 ret, frame = cap.read()
@@ -366,37 +362,16 @@ class VideoProcessor:
 
                 frame_id += 1
 
-                # Only run YOLO + DeepSORT every N frames for speed
+                # Downscale immediately -> everything below is cheap
+                frame = cv2.resize(frame, (stream_width, stream_height))
+
+                # Run YOLO + DeepSORT every N frames; reuse results otherwise
                 if frame_id % self.frame_skip == 0:
-                    resize_height = int(height * (self.resize_width / width))
-                    small_frame = cv2.resize(frame, (self.resize_width, resize_height))
-
-                    detections = self.detector.detect(small_frame)
-
-                    scale_x = width / self.resize_width
-                    scale_y = height / resize_height
-
-                    for det in detections:
-                        x1, y1, x2, y2 = det["bbox"]
-                        det["bbox"] = [
-                            int(x1 * scale_x),
-                            int(y1 * scale_y),
-                            int(x2 * scale_x),
-                            int(y2 * scale_y),
-                        ]
+                    # Detection runs directly on the small frame (no rescaling)
+                    detections = self.detector.detect(frame)
 
                     tracked_objects = self.tracker.update(detections, frame=frame)
-                    count_result = counter.update(tracked_objects, height)
-
-                    for event in count_result["crossing_events"]:
-                        save_vehicle_event(
-                            db=db,
-                            video_id=video_id,
-                            track_id=event["track_id"],
-                            vehicle_type=event["vehicle_type"],
-                            direction=event["direction"],
-                            confidence=None,
-                        )
+                    count_result = counter.update(tracked_objects, stream_height)
 
                     active_vehicles = len(tracked_objects)
                     density_level = self.density.calculate(active_vehicles)
@@ -411,9 +386,13 @@ class VideoProcessor:
                     density_level = last_density_level
                     active_vehicles = len(tracked_objects)
 
-                # If no processed frame yet, just stream the original frame
+                # Frame dropping: only stream every Nth frame to stay live
+                if show_every > 1 and frame_id % show_every != 0:
+                    continue
+
+                # If nothing processed yet, stream the raw small frame
                 if count_result is None:
-                    ok, buffer = cv2.imencode(".jpg", frame)
+                    ok, buffer = cv2.imencode(".jpg", frame, jpeg_params)
                     if ok:
                         yield (
                             b"--frame\r\n"
@@ -423,9 +402,9 @@ class VideoProcessor:
                         )
                     continue
 
-                # Draw count line
+                # Draw count line (coords already in stream resolution)
                 line_y = count_result["line_y"]
-                cv2.line(frame, (0, line_y), (width, line_y), (0, 255, 255), 2)
+                cv2.line(frame, (0, line_y), (stream_width, line_y), (0, 255, 255), 2)
 
                 # Draw tracked objects
                 for obj in tracked_objects:
@@ -435,79 +414,49 @@ class VideoProcessor:
 
                     box_color = (0, 0, 255) if class_name == "accident" else (0, 255, 0)
 
-                    if class_name == "accident" and track_id not in saved_accident_ids:
-                        save_accident_event(
-                            db=db,
-                            video_id=video_id,
-                            track_id=track_id,
-                            confidence=1.0,
-                            frame_number=frame_id,
-                            bbox=[x1, y1, x2, y2],
-                        )
-
-                        saved_accident_ids.add(track_id)
-
                     cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
 
                     label = f"{class_name} ID:{track_id}"
                     cv2.putText(
                         frame,
                         label,
-                        (x1, max(y1 - 10, 20)),
+                        (x1, max(y1 - 8, 16)),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
+                        0.5,
                         box_color,
                         2,
                     )
 
+                # Live FPS
                 elapsed_time = time.time() - start_time
                 processing_fps = frame_id / elapsed_time if elapsed_time > 0 else 0
 
                 class_counts = count_result["class_counts"]
 
-                if frame_id % 200 == 0:
-                    save_snapshot(
-                        db=db,
-                        video_id=video_id,
-                        total_count=count_result["total_count"],
-                        incoming_count=count_result["incoming_count"],
-                        outgoing_count=count_result["outgoing_count"],
-                        active_vehicles=active_vehicles,
-                        class_counts=class_counts,
-                        density_level=density_level,
-                        fps=processing_fps,
-                    )
-                    print(f"Snapshot Saved @ Frame {frame_id}")
-
-                y = 40
-                gap = 35
-
+                # Compact overlay
+                y = 24
+                gap = 24
                 overlay_items = [
                     f"Total: {count_result['total_count']}",
-                    f"Incoming: {count_result['incoming_count']}",
-                    f"Outgoing: {count_result['outgoing_count']}",
-                    f"Cars: {class_counts['car']}",
-                    f"Trucks: {class_counts['truck']}",
-                    f"Buses: {class_counts['bus']}",
-                    f"Motorcycles: {class_counts['motorcycle']}",
+                    f"In: {count_result['incoming_count']}  Out: {count_result['outgoing_count']}",
                     f"Density: {density_level}",
-                    f"FPS: {processing_fps:.2f}",
+                    f"FPS: {processing_fps:.1f}",
                 ]
 
                 for item in overlay_items:
                     cv2.putText(
                         frame,
                         item,
-                        (20, y),
+                        (12, y),
                         cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
+                        0.6,
                         (255, 255, 255),
                         2,
                     )
                     y += gap
 
-                # Encode the annotated frame as JPEG and yield it
-                ok, buffer = cv2.imencode(".jpg", frame)
+                # Encode the annotated small frame as a low-quality JPEG
+                ok, buffer = cv2.imencode(".jpg", frame, jpeg_params)
                 if not ok:
                     continue
 
@@ -518,31 +467,11 @@ class VideoProcessor:
                     + b"\r\n"
                 )
 
-            # Mark video as completed in database
-            update_video_status(
-                db=db,
-                video_id=video_id,
-                status="completed",
-                output_path=self.output_video,
-            )
-
-            print("Live processing completed")
-
-        except Exception as error:
-            if video_id is not None:
-                update_video_status(
-                    db=db,
-                    video_id=video_id,
-                    status="failed",
-                    output_path=self.output_video,
-                )
-
-            print(f"Live processing failed: {error}")
-            raise
+            print("Live stream finished")
 
         finally:
+            # No DB session opened in live mode -> just release the capture
             cap.release()
-            db.close()
 
 
 if __name__ == "__main__":
