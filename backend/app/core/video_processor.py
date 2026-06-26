@@ -305,6 +305,157 @@ class VideoProcessor:
             writer.release()
             db.close()
 
+    def generate_frames(self):
+    """
+    Live MJPEG generator: same detection/tracking/counting pipeline as
+    process(), but instead of writing a file it YIELDS each annotated
+    frame as a JPEG for real-time streaming. Events + snapshots still
+    get saved to the database.
+    """
+    counter = VehicleCounter(line_position_ratio=0.6, road_mode=self.road_mode)
+
+    cap = cv2.VideoCapture(self.input_video)
+    if not cap.isOpened():
+        raise FileNotFoundError(f"Could not open video: {self.input_video}")
+
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+    frame_id = 0
+    start_time = time.time()
+    last_tracked_objects = []
+    last_count_result = None
+    last_density_level = "Low"
+
+    db = SessionLocal()
+    video_id = None
+    try:
+        video = create_video(
+            db=db,
+            filename=Path(self.input_video).name,
+            source_type="upload",
+            status="processing",
+            model_used=Path(self.model_path).name,
+        )
+        video_id = video.id
+        saved_accident_ids = set()
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame_id += 1
+
+            if frame_id % self.frame_skip == 0:
+                resize_height = int(height * (self.resize_width / width))
+                small_frame = cv2.resize(frame, (self.resize_width, resize_height))
+                detections = self.detector.detect(small_frame)
+
+                scale_x = width / self.resize_width
+                scale_y = height / resize_height
+                for det in detections:
+                    x1, y1, x2, y2 = det["bbox"]
+                    det["bbox"] = [
+                        int(x1 * scale_x), int(y1 * scale_y),
+                        int(x2 * scale_x), int(y2 * scale_y),
+                    ]
+
+                tracked_objects = self.tracker.update(detections, frame=frame)
+                count_result = counter.update(tracked_objects, height)
+
+                for event in count_result["crossing_events"]:
+                    save_vehicle_event(
+                        db=db, video_id=video_id,
+                        track_id=event["track_id"],
+                        vehicle_type=event["vehicle_type"],
+                        direction=event["direction"], confidence=None,
+                    )
+
+                active_vehicles = len(tracked_objects)
+                density_level = self.density.calculate(active_vehicles)
+                last_tracked_objects = tracked_objects
+                last_count_result = count_result
+                last_density_level = density_level
+            else:
+                tracked_objects = last_tracked_objects
+                count_result = last_count_result
+                density_level = last_density_level
+                active_vehicles = len(tracked_objects)
+
+            if count_result is not None:
+                line_y = count_result["line_y"]
+                cv2.line(frame, (0, line_y), (width, line_y), (0, 255, 255), 2)
+
+                for obj in tracked_objects:
+                    track_id = obj["track_id"]
+                    x1, y1, x2, y2 = obj["bbox"]
+                    class_name = obj.get("class_name", "vehicle")
+                    box_color = (0, 0, 255) if class_name == "accident" else (0, 255, 0)
+
+                    if class_name == "accident" and track_id not in saved_accident_ids:
+                        save_accident_event(
+                            db=db, video_id=video_id, track_id=track_id,
+                            confidence=1.0, frame_number=frame_id,
+                            bbox=[x1, y1, x2, y2],
+                        )
+                        saved_accident_ids.add(track_id)
+
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+                    cv2.putText(
+                        frame, f"{class_name} ID:{track_id}",
+                        (x1, max(y1 - 10, 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, box_color, 2,
+                    )
+
+                elapsed_time = time.time() - start_time
+                processing_fps = frame_id / elapsed_time if elapsed_time > 0 else 0
+                class_counts = count_result["class_counts"]
+
+                if frame_id % 200 == 0:
+                    save_snapshot(
+                        db=db, video_id=video_id,
+                        total_count=count_result["total_count"],
+                        incoming_count=count_result["incoming_count"],
+                        outgoing_count=count_result["outgoing_count"],
+                        active_vehicles=active_vehicles,
+                        class_counts=class_counts,
+                        density_level=density_level, fps=processing_fps,
+                    )
+
+                y = 40
+                for item in [
+                    f"Total: {count_result['total_count']}",
+                    f"Incoming: {count_result['incoming_count']}",
+                    f"Outgoing: {count_result['outgoing_count']}",
+                    f"Cars: {class_counts['car']}",
+                    f"Trucks: {class_counts['truck']}",
+                    f"Buses: {class_counts['bus']}",
+                    f"Motorcycles: {class_counts['motorcycle']}",
+                    f"Density: {density_level}",
+                    f"FPS: {processing_fps:.2f}",
+                ]:
+                    cv2.putText(frame, item, (20, y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                    y += 35
+
+            ok, buffer = cv2.imencode(".jpg", frame)
+            if not ok:
+                continue
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n\r\n" + buffer.tobytes() + b"\r\n")
+
+        update_video_status(db=db, video_id=video_id, status="completed",
+                            output_path=self.output_video)
+    except Exception as error:
+        if video_id is not None:
+            update_video_status(db=db, video_id=video_id, status="failed",
+                                output_path=self.output_video)
+        print(f"Live processing failed: {error}")
+        raise
+    finally:
+        cap.release()
+        db.close()
+
 
 if __name__ == "__main__":
     processor = VideoProcessor(

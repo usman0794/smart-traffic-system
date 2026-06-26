@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from app.core.video_processor import VideoProcessor
+from fastapi.responses import StreamingResponse
 
 router = APIRouter(prefix="/videos", tags=["Videos"])
 
@@ -59,3 +60,20 @@ def process_video(filename: str, road_mode: str = "two_way"):
         "input_video": str(input_path),
         "output_video": str(output_path)
     }
+
+@router.get("/stream/{filename}")
+def stream_video(filename: str, road_mode: str = "two_way"):
+    input_path = UPLOAD_DIR / filename
+    if not input_path.exists():
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    processor = VideoProcessor(
+        model_path="models/best.pt",
+        input_video=str(input_path),
+        output_video=str(OUTPUT_DIR / f"processed_{filename}"),
+        road_mode=road_mode,
+    )
+    return StreamingResponse(
+        processor.generate_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame",
+    )

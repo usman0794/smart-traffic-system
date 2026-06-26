@@ -22,6 +22,7 @@ export default function UploadVideo() {
   const [processing, setProcessing] = useState(false);
   const [roadMode, setRoadMode] = useState("two_way");
   const [dragActive, setDragActive] = useState(false);
+  const [streamUrl, setStreamUrl] = useState("");
   const fileInputRef = useRef(null);
 
   const handleFileChange = (e) => {
@@ -45,6 +46,7 @@ export default function UploadVideo() {
 
     setFile(selectedFile);
     setFilename("");
+    setStreamUrl("");
     localStorage.setItem("resetDashboard", "true");
     setMessage(
       `Selected: ${selectedFile.name} (${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB)`,
@@ -70,6 +72,7 @@ export default function UploadVideo() {
     setFilename("");
     setMessage("");
     setMessageType("info");
+    setStreamUrl("");
 
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -153,6 +156,21 @@ export default function UploadVideo() {
     } finally {
       setProcessing(false);
     }
+  };
+
+  const watchLive = () => {
+    if (!filename) {
+      setMessage("Please upload the video first.");
+      setMessageType("error");
+      return;
+    }
+
+    const base = api.defaults.baseURL || "";
+    setStreamUrl(
+      `${base}/videos/stream/${filename}?road_mode=${roadMode}&t=${Date.now()}`,
+    );
+    setMessage("Live detection started — watch the feed below.");
+    setMessageType("info");
   };
 
   const MessageIcon = () => {
@@ -311,12 +329,22 @@ export default function UploadVideo() {
                   )}
                 </button>
 
+                <button
+                  onClick={watchLive}
+                  disabled={!filename || uploading}
+                  className="flex items-center gap-2 px-6 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                >
+                  <FaVideo />
+                  Watch Live
+                </button>
+
                 {filename && (
                   <button
                     onClick={() => {
                       setFilename("");
                       setMessage("");
                       setMessageType("info");
+                      setStreamUrl("");
                     }}
                     className="px-4 py-2.5 border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition font-medium"
                   >
@@ -379,6 +407,24 @@ export default function UploadVideo() {
               )}
             </div>
           </div>
+
+          {streamUrl && (
+            <div className="bg-white rounded-xl shadow-sm p-6 mt-6">
+              <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+                <FaVideo className="text-red-500" />
+                Live Detection Feed
+              </h2>
+              <img
+                src={streamUrl}
+                alt="Live processing"
+                className="w-full rounded-lg border border-gray-200"
+              />
+              <p className="text-xs text-gray-400 mt-2">
+                Boxes, IDs and counts are drawn on the GPU in real time. The
+                feed stops automatically when the video ends.
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="space-y-6">
@@ -393,7 +439,7 @@ export default function UploadVideo() {
                 "Select a traffic video file",
                 "Choose road mode (One Way / Two Way)",
                 "Click Upload to upload the video",
-                "Click Process to analyze traffic",
+                "Click Watch Live to see detection in real time",
               ].map((step, index) => (
                 <li key={step} className="flex items-start gap-2">
                   <span className="bg-blue-100 text-blue-600 font-bold rounded-full w-5 h-5 flex items-center justify-center flex-shrink-0 text-xs">
