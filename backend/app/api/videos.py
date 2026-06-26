@@ -2,8 +2,9 @@ import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi.responses import StreamingResponse, FileResponse
+
 from app.core.video_processor import VideoProcessor
-from fastapi.responses import StreamingResponse
 
 router = APIRouter(prefix="/videos", tags=["Videos"])
 
@@ -44,7 +45,8 @@ def process_video(filename: str, road_mode: str = "two_way"):
             detail="Video not found"
         )
 
-    output_path = OUTPUT_DIR / f"processed_{filename}"
+    output_name = f"processed_{filename}"
+    output_path = OUTPUT_DIR / output_name
 
     processor = VideoProcessor(
         model_path="models/best.pt",
@@ -58,22 +60,49 @@ def process_video(filename: str, road_mode: str = "two_way"):
     return {
         "message": "Video processed successfully",
         "input_video": str(input_path),
-        "output_video": str(output_path)
+        "output_video": str(output_path),
+        "download_name": output_name
     }
+
 
 @router.get("/stream/{filename}")
 def stream_video(filename: str, road_mode: str = "two_way"):
     input_path = UPLOAD_DIR / filename
+
     if not input_path.exists():
-        raise HTTPException(status_code=404, detail="Video not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Video not found"
+        )
+
+    output_path = OUTPUT_DIR / f"processed_{filename}"
 
     processor = VideoProcessor(
         model_path="models/best.pt",
         input_video=str(input_path),
-        output_video=str(OUTPUT_DIR / f"processed_{filename}"),
+        output_video=str(output_path),
         road_mode=road_mode,
     )
+
     return StreamingResponse(
         processor.generate_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@router.get("/download/{filename}")
+def download_video(filename: str):
+    # Serve a processed output video as a file download
+    file_path = OUTPUT_DIR / filename
+
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="Processed video not found"
+        )
+
+    return FileResponse(
+        path=str(file_path),
+        media_type="video/mp4",
+        filename=filename,
     )

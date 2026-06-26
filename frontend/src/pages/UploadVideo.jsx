@@ -4,6 +4,7 @@ import {
   FaUpload,
   FaPlay,
   FaStop,
+  FaDownload,
   FaSpinner,
   FaCheckCircle,
   FaExclamationTriangle,
@@ -24,6 +25,7 @@ export default function UploadVideo() {
   const [roadMode, setRoadMode] = useState("two_way");
   const [dragActive, setDragActive] = useState(false);
   const [streamUrl, setStreamUrl] = useState("");
+  const [processedFile, setProcessedFile] = useState("");
   const fileInputRef = useRef(null);
 
   const handleFileChange = (e) => {
@@ -45,8 +47,9 @@ export default function UploadVideo() {
       return;
     }
 
-    // Stop any running live stream before loading a new file
+    // Stop any running live stream and clear previous result
     setStreamUrl("");
+    setProcessedFile("");
     setFile(selectedFile);
     setFilename("");
     localStorage.setItem("resetDashboard", "true");
@@ -75,6 +78,7 @@ export default function UploadVideo() {
     setMessage("");
     setMessageType("info");
     setStreamUrl("");
+    setProcessedFile("");
 
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -90,6 +94,7 @@ export default function UploadVideo() {
 
     try {
       setUploading(true);
+      setProcessedFile("");
       localStorage.setItem("resetDashboard", "true");
       setMessage("Uploading video...");
       setMessageType("info");
@@ -135,6 +140,7 @@ export default function UploadVideo() {
 
     try {
       setProcessing(true);
+      setProcessedFile("");
       setMessage("Processing video... This may take several minutes.");
       setMessageType("info");
 
@@ -145,12 +151,12 @@ export default function UploadVideo() {
         timeout: 300000,
       });
 
-      setMessage(`Processed successfully: ${res.data.output_video}`);
-      setMessageType("success");
+      // Backend saves output as processed_<filename>
+      const downloadName = res.data.download_name || `processed_${filename}`;
+      setProcessedFile(downloadName);
 
-      setTimeout(() => {
-        setFilename("");
-      }, 3000);
+      setMessage("Processing complete! Your video is ready to download.");
+      setMessageType("success");
     } catch (error) {
       console.error("Processing error:", error);
       setMessage("Processing failed. Please check the backend console.");
@@ -186,6 +192,7 @@ export default function UploadVideo() {
   // STOP & RESET: stop the stream AND clear everything for a fresh upload.
   const stopAndReset = () => {
     setStreamUrl("");
+    setProcessedFile("");
     setFile(null);
     setFilename("");
     setMessage("Stopped. Ready for a new video.");
@@ -195,6 +202,10 @@ export default function UploadVideo() {
       fileInputRef.current.value = "";
     }
   };
+
+  const downloadUrl = processedFile
+    ? `${api.defaults.baseURL || ""}/videos/download/${processedFile}`
+    : "";
 
   const MessageIcon = () => {
     if (messageType === "success") {
@@ -371,7 +382,7 @@ export default function UploadVideo() {
                   </button>
                 )}
 
-                {(filename || streamUrl) && (
+                {(filename || streamUrl || processedFile) && (
                   <button
                     onClick={stopAndReset}
                     className="px-4 py-2.5 border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition font-medium"
@@ -424,13 +435,31 @@ export default function UploadVideo() {
                 </div>
               )}
 
-              {filename && (
+              {filename && !processedFile && (
                 <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
                   <div className="flex items-center gap-2 text-green-700">
                     <FaCheckCircle />
                     <span className="font-semibold">Ready to process:</span>
                     <span className="text-sm">{filename}</span>
                   </div>
+                </div>
+              )}
+
+              {processedFile && (
+                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between gap-4 flex-wrap">
+                  <div className="flex items-center gap-2 text-emerald-700">
+                    <FaCheckCircle />
+                    <span className="font-semibold">Processed video ready</span>
+                  </div>
+
+                  <a
+                    href={downloadUrl}
+                    download
+                    className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition font-medium"
+                  >
+                    <FaDownload />
+                    Download Video
+                  </a>
                 </div>
               )}
             </div>
@@ -479,7 +508,7 @@ export default function UploadVideo() {
                 "Choose road mode (One Way / Two Way)",
                 "Click Upload to upload the video",
                 "Click Watch Live to see detection in real time",
-                "Click Stop to end the stream and upload a new video",
+                "Click Process Video, then Download the result",
               ].map((step, index) => (
                 <li key={step} className="flex items-start gap-2">
                   <span className="bg-blue-100 text-blue-600 font-bold rounded-full w-5 h-5 flex items-center justify-center flex-shrink-0 text-xs">
