@@ -27,6 +27,7 @@ export default function UploadVideo() {
   const [streamUrl, setStreamUrl] = useState("");
   const [processedFile, setProcessedFile] = useState("");
   const fileInputRef = useRef(null);
+  const processAbortRef = useRef(null);
 
   const handleFileChange = (e) => {
     handleFileSelect(e.target.files[0]);
@@ -47,8 +48,8 @@ export default function UploadVideo() {
       return;
     }
 
-    // Stop any running live stream and clear previous result
-    setStreamUrl("");
+    // Stop anything running and clear previous result
+    stopAll(true);
     setProcessedFile("");
     setFile(selectedFile);
     setFilename("");
@@ -73,11 +74,11 @@ export default function UploadVideo() {
   };
 
   const clearFile = () => {
+    stopAll(true);
     setFile(null);
     setFilename("");
     setMessage("");
     setMessageType("info");
-    setStreamUrl("");
     setProcessedFile("");
 
     if (fileInputRef.current) {
@@ -138,6 +139,12 @@ export default function UploadVideo() {
       return;
     }
 
+    // Stop any running live stream first
+    setStreamUrl("");
+
+    const controller = new AbortController();
+    processAbortRef.current = controller;
+
     try {
       setProcessing(true);
       setProcessedFile("");
@@ -149,19 +156,27 @@ export default function UploadVideo() {
           road_mode: roadMode,
         },
         timeout: 300000,
+        signal: controller.signal,
       });
 
-      // Backend saves output as processed_<filename>
       const downloadName = res.data.download_name || `processed_${filename}`;
       setProcessedFile(downloadName);
 
       setMessage("Processing complete! Your video is ready to download.");
       setMessageType("success");
     } catch (error) {
-      console.error("Processing error:", error);
-      setMessage("Processing failed. Please check the backend console.");
-      setMessageType("error");
+      // If the user pressed Stop, the request was aborted - not a real error
+      if (controller.signal.aborted) {
+        // already handled by stopAll()
+      } else {
+        console.error("Processing error:", error);
+        setMessage("Processing failed. Please check the backend console.");
+        setMessageType("error");
+      }
     } finally {
+      if (processAbortRef.current === controller) {
+        processAbortRef.current = null;
+      }
       setProcessing(false);
     }
   };
@@ -181,17 +196,30 @@ export default function UploadVideo() {
     setMessageType("info");
   };
 
-  // STOP: removes the <img>, which closes the MJPEG connection. The backend
-  // generator then receives GeneratorExit and stops processing immediately.
-  const stopLive = () => {
+  // Unified STOP: stops the live stream AND cancels the processing request,
+  // then clears the spinner. `silent` skips the status message (used when
+  // switching files).
+  const stopAll = (silent = false) => {
+    // 1) Stop live stream: removing the <img> closes the MJPEG connection,
+    //    so the backend generate_frames() hits GeneratorExit and stops.
     setStreamUrl("");
-    setMessage("Live stream stopped. You can upload a new video.");
-    setMessageType("info");
+
+    // 2) Cancel any in-flight "Process Video" request and clear the spinner.
+    if (processAbortRef.current) {
+      processAbortRef.current.abort();
+      processAbortRef.current = null;
+    }
+    setProcessing(false);
+
+    if (!silent) {
+      setMessage("Stopped. You can upload a new video.");
+      setMessageType("info");
+    }
   };
 
-  // STOP & RESET: stop the stream AND clear everything for a fresh upload.
+  // STOP & RESET: stop everything and clear for a fresh upload.
   const stopAndReset = () => {
-    setStreamUrl("");
+    stopAll(true);
     setProcessedFile("");
     setFile(null);
     setFilename("");
@@ -206,6 +234,8 @@ export default function UploadVideo() {
   const downloadUrl = processedFile
     ? `${api.defaults.baseURL || ""}/videos/download/${processedFile}`
     : "";
+
+  const busy = uploading || processing || !!streamUrl;
 
   const MessageIcon = () => {
     if (messageType === "success") {
@@ -329,7 +359,7 @@ export default function UploadVideo() {
               <div className="flex flex-wrap gap-3">
                 <button
                   onClick={uploadVideo}
-                  disabled={!file || uploading || processing}
+                  disabled={!file || busy}
                   className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition disabled:opacity-50 disabled:cursor-not-allowed font-medium"
                 >
                   {uploading ? (
@@ -347,7 +377,7 @@ export default function UploadVideo() {
 
                 <button
                   onClick={processVideo}
-                  disabled={!filename || uploading || processing}
+                  disabled={!filename || busy}
                   className="flex items-center gap-2 px-6 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 transition disabled:opacity-50 disabled:cursor-not-allowed font-medium"
                 >
                   {processing ? (
@@ -363,13 +393,13 @@ export default function UploadVideo() {
                   )}
                 </button>
 
-                {streamUrl ? (
+                {streamUrl || processing ? (
                   <button
-                    onClick={stopLive}
+                    onClick={() => stopAll(false)}
                     className="flex items-center gap-2 px-6 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-black transition font-medium"
                   >
                     <FaStop />
-                    Stop Live
+                    Stop
                   </button>
                 ) : (
                   <button
@@ -382,7 +412,7 @@ export default function UploadVideo() {
                   </button>
                 )}
 
-                {(filename || streamUrl || processedFile) && (
+                {(filename || streamUrl || processedFile || processing) && (
                   <button
                     onClick={stopAndReset}
                     className="px-4 py-2.5 border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition font-medium"
@@ -474,7 +504,7 @@ export default function UploadVideo() {
                 </h2>
 
                 <button
-                  onClick={stopLive}
+                  onClick={() => stopAll(false)}
                   className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-black transition text-sm font-medium"
                 >
                   <FaStop />
@@ -507,8 +537,8 @@ export default function UploadVideo() {
                 "Select a traffic video file",
                 "Choose road mode (One Way / Two Way)",
                 "Click Upload to upload the video",
-                "Click Watch Live to see detection in real time",
-                "Click Process Video, then Download the result",
+                "Click Watch Live for real-time detection",
+                "Or Process Video, then Download the result",
               ].map((step, index) => (
                 <li key={step} className="flex items-start gap-2">
                   <span className="bg-blue-100 text-blue-600 font-bold rounded-full w-5 h-5 flex items-center justify-center flex-shrink-0 text-xs">
@@ -581,8 +611,8 @@ export default function UploadVideo() {
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
             <h4 className="font-semibold text-blue-900 mb-2">💡 Tip</h4>
             <p className="text-xs text-blue-700">
-              For best results, use videos with clear traffic flow, stable
-              camera angle, and good lighting conditions.
+              Use Watch Live for instant real-time detection. Use Process Video
+              when you want to save and download the analyzed video.
             </p>
           </div>
         </div>
