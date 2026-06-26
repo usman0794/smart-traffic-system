@@ -3,6 +3,7 @@ import api from "../services/api";
 import {
   FaUpload,
   FaPlay,
+  FaStop,
   FaSpinner,
   FaCheckCircle,
   FaExclamationTriangle,
@@ -44,9 +45,10 @@ export default function UploadVideo() {
       return;
     }
 
+    // Stop any running live stream before loading a new file
+    setStreamUrl("");
     setFile(selectedFile);
     setFilename("");
-    setStreamUrl("");
     localStorage.setItem("resetDashboard", "true");
     setMessage(
       `Selected: ${selectedFile.name} (${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB)`,
@@ -171,6 +173,27 @@ export default function UploadVideo() {
     );
     setMessage("Live detection started — watch the feed below.");
     setMessageType("info");
+  };
+
+  // STOP: removes the <img>, which closes the MJPEG connection. The backend
+  // generator then receives GeneratorExit and stops processing immediately.
+  const stopLive = () => {
+    setStreamUrl("");
+    setMessage("Live stream stopped. You can upload a new video.");
+    setMessageType("info");
+  };
+
+  // STOP & RESET: stop the stream AND clear everything for a fresh upload.
+  const stopAndReset = () => {
+    setStreamUrl("");
+    setFile(null);
+    setFilename("");
+    setMessage("Stopped. Ready for a new video.");
+    setMessageType("info");
+
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
   const MessageIcon = () => {
@@ -329,27 +352,32 @@ export default function UploadVideo() {
                   )}
                 </button>
 
-                <button
-                  onClick={watchLive}
-                  disabled={!filename || uploading}
-                  className="flex items-center gap-2 px-6 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed font-medium"
-                >
-                  <FaVideo />
-                  Watch Live
-                </button>
-
-                {filename && (
+                {streamUrl ? (
                   <button
-                    onClick={() => {
-                      setFilename("");
-                      setMessage("");
-                      setMessageType("info");
-                      setStreamUrl("");
-                    }}
+                    onClick={stopLive}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-gray-800 text-white rounded-lg hover:bg-black transition font-medium"
+                  >
+                    <FaStop />
+                    Stop Live
+                  </button>
+                ) : (
+                  <button
+                    onClick={watchLive}
+                    disabled={!filename || uploading}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-red-600 text-white rounded-lg hover:bg-red-700 transition disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                  >
+                    <FaVideo />
+                    Watch Live
+                  </button>
+                )}
+
+                {(filename || streamUrl) && (
+                  <button
+                    onClick={stopAndReset}
                     className="px-4 py-2.5 border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50 transition font-medium"
                   >
                     <FaTrash className="inline mr-1" />
-                    Clear
+                    Stop & New Video
                   </button>
                 )}
               </div>
@@ -410,18 +438,29 @@ export default function UploadVideo() {
 
           {streamUrl && (
             <div className="bg-white rounded-xl shadow-sm p-6 mt-6">
-              <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
-                <FaVideo className="text-red-500" />
-                Live Detection Feed
-              </h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                  <FaVideo className="text-red-500" />
+                  Live Detection Feed
+                </h2>
+
+                <button
+                  onClick={stopLive}
+                  className="flex items-center gap-2 px-4 py-2 bg-gray-800 text-white rounded-lg hover:bg-black transition text-sm font-medium"
+                >
+                  <FaStop />
+                  Stop
+                </button>
+              </div>
+
               <img
                 src={streamUrl}
                 alt="Live processing"
                 className="w-full rounded-lg border border-gray-200"
               />
               <p className="text-xs text-gray-400 mt-2">
-                Boxes, IDs and counts are drawn on the GPU in real time. The
-                feed stops automatically when the video ends.
+                Boxes, IDs and counts are drawn on the GPU in real time. Click
+                Stop to end the stream and free the server.
               </p>
             </div>
           )}
@@ -440,6 +479,7 @@ export default function UploadVideo() {
                 "Choose road mode (One Way / Two Way)",
                 "Click Upload to upload the video",
                 "Click Watch Live to see detection in real time",
+                "Click Stop to end the stream and upload a new video",
               ].map((step, index) => (
                 <li key={step} className="flex items-start gap-2">
                   <span className="bg-blue-100 text-blue-600 font-bold rounded-full w-5 h-5 flex items-center justify-center flex-shrink-0 text-xs">
@@ -482,6 +522,17 @@ export default function UploadVideo() {
                 <span className="text-gray-500">Road Mode</span>
                 <span className="text-slate-700 font-medium">
                   {roadMode === "one_way" ? "One Way" : "Two Way"}
+                </span>
+              </div>
+
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500">Live Stream</span>
+                <span
+                  className={
+                    streamUrl ? "text-red-600 font-medium" : "text-gray-400"
+                  }
+                >
+                  {streamUrl ? "Running" : "Stopped"}
                 </span>
               </div>
 
