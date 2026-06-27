@@ -18,6 +18,8 @@ import { MdCloudUpload, MdVideoSettings } from "react-icons/md";
 // localStorage keys used to keep state across navigation / reloads
 const LS_FILENAME = "uploadedFilename";
 const LS_PROCESSED = "processedVideo";
+// Remembers a job that is still running, so it survives navigating away/back.
+const LS_PROCESSING = "processingFilename";
 
 export default function UploadVideo() {
   const [file, setFile] = useState(null);
@@ -32,12 +34,59 @@ export default function UploadVideo() {
   const [processedFile, setProcessedFile] = useState("");
   const fileInputRef = useRef(null);
   const processAbortRef = useRef(null);
+  const pollRef = useRef(null);
 
-  // Restore previous upload / processed video when the page mounts
-  // (so the Download button survives navigating to the dashboard and back).
+  // Stop the background completion watcher.
+  const stopProcessingWatch = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
+  // Watch the backend for the finished file. This is what lets a job survive
+  // navigating to the dashboard and back: even if the original POST result is
+  // lost when the page unmounts, this detects the processed file and shows the
+  // Download button. Uses a lightweight HEAD request (no full download).
+  const startProcessingWatch = (fname) => {
+    if (!fname) return;
+    stopProcessingWatch();
+
+    const downloadName = `processed_${fname}`;
+    const url = `${api.defaults.baseURL || ""}/videos/download/${downloadName}`;
+
+    let attempts = 0;
+    const maxAttempts = 90; // ~6 minutes at 4s intervals
+
+    pollRef.current = setInterval(async () => {
+      attempts += 1;
+      try {
+        await api.head(url);
+        // File exists -> processing finished (even if we navigated away).
+        stopProcessingWatch();
+        setProcessedFile(downloadName);
+        localStorage.setItem(LS_PROCESSED, downloadName);
+        localStorage.removeItem(LS_PROCESSING);
+        setProcessing(false);
+        setMessage("Processing complete! Your video is ready to download.");
+        setMessageType("success");
+      } catch (err) {
+        // 404 = not ready yet; keep polling until the cap is reached.
+        if (attempts >= maxAttempts) {
+          stopProcessingWatch();
+          localStorage.removeItem(LS_PROCESSING);
+          setProcessing(false);
+        }
+      }
+    }, 4000);
+  };
+
+  // Restore previous upload / processed video when the page mounts, and resume
+  // watching a job that was still running when we navigated away.
   useEffect(() => {
     const savedFilename = localStorage.getItem(LS_FILENAME);
     const savedProcessed = localStorage.getItem(LS_PROCESSED);
+    const processingFilename = localStorage.getItem(LS_PROCESSING);
 
     if (savedFilename) {
       setFilename(savedFilename);
@@ -47,7 +96,22 @@ export default function UploadVideo() {
       setProcessedFile(savedProcessed);
       setMessage("Your previously processed video is ready to download.");
       setMessageType("success");
+    } else if (processingFilename) {
+      // A job was running before we navigated away -> resume watching it.
+      setFilename(processingFilename);
+      setProcessing(true);
+      setMessage(
+        "Still processing in the background... this page will update automatically when it's ready.",
+      );
+      setMessageType("info");
+      startProcessingWatch(processingFilename);
     }
+
+    // Clean up the interval on unmount. We do NOT abort the server-side job,
+    // so processing keeps running while you're on another page.
+    return () => {
+      stopProcessingWatch();
+    };
   }, []);
 
   const handleFileChange = (e) => {
@@ -174,8 +238,13 @@ export default function UploadVideo() {
       setProcessing(true);
       setProcessedFile("");
       localStorage.removeItem(LS_PROCESSED);
+      // Remember the running job so it survives navigation / reloads.
+      localStorage.setItem(LS_PROCESSING, filename);
       setMessage("Processing video... This may take several minutes.");
       setMessageType("info");
+
+      // Background watcher: detects completion even if this page unmounts.
+      startProcessingWatch(filename);
 
       const res = await api.post(`/videos/process/${filename}`, null, {
         params: {
@@ -187,8 +256,10 @@ export default function UploadVideo() {
 
       const downloadName =
         (res.data && res.data.download_name) || `processed_${filename}`;
+      stopProcessingWatch();
       setProcessedFile(downloadName);
       localStorage.setItem(LS_PROCESSED, downloadName);
+      localStorage.removeItem(LS_PROCESSING);
 
       setMessage("Processing complete! Your video is ready to download.");
       setMessageType("success");
@@ -198,7 +269,12 @@ export default function UploadVideo() {
         // already handled by stopAll()
       } else {
         console.error("Processing error:", error);
-        setMessage("Processing failed. Please check the backend console.");
+        // The job may still be finishing on the server (e.g. the request timed
+        // out but the GPU keeps working). Leave the background watcher running
+        // so the Download button can still appear automatically.
+        setMessage(
+          "The processing request returned an error. If the backend is still working it will finish in the background and the Download button will appear; otherwise check the backend console.",
+        );
         setMessageType("error");
       }
     } finally {
@@ -237,6 +313,11 @@ export default function UploadVideo() {
       processAbortRef.current.abort();
       processAbortRef.current = null;
     }
+
+    // 3) Stop the background completion watcher and forget the running job.
+    stopProcessingWatch();
+    localStorage.removeItem(LS_PROCESSING);
+
     setProcessing(false);
 
     if (!silent) {

@@ -326,6 +326,11 @@ class VideoProcessor:
                         db=db,
                         video_id=video_id,
                         total_count=count_result["total_count"],
+                        incoming_count=count_result["incoming_count"],
+                        outgoing_count=count_result["outgoing_count"],
+                        active_vehicles=active_vehicles,
+                        class_counts=class_counts,
+                        density_level=density_level,
                         fps=processing_fps,
                     )
                     print(f"Snapshot Saved @ Frame {frame_id}")
