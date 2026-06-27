@@ -17,6 +17,23 @@ from app.database.crud import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Professional overlay styling
+# ---------------------------------------------------------------------------
+# Colors are BGR (OpenCV order). One distinct color per vehicle class so the
+# boxes are readable at a glance.
+CLASS_COLORS = {
+    "car": (76, 175, 80),         # green
+    "truck": (0, 152, 255),       # orange
+    "bus": (255, 152, 0),         # blue
+    "motorcycle": (200, 70, 220), # purple
+    "accident": (60, 60, 255),    # red
+}
+DEFAULT_COLOR = (76, 175, 80)
+WHITE = (255, 255, 255)
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+
+
 class VideoProcessor:
     def __init__(
         self,
@@ -45,6 +62,105 @@ class VideoProcessor:
         # Resize video frame before YOLO inference
         self.resize_width = 640
 
+        # Hide the ID label on boxes shorter than this many pixels.
+        # (Stops the unreadable label "smear" in the crowded far field.)
+        self.min_label_height = 22
+
+    # ------------------------------------------------------------------
+    # Drawing helpers (shared by saved video + live stream)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _class_color(class_name):
+        return CLASS_COLORS.get(class_name, DEFAULT_COLOR)
+
+    @staticmethod
+    def _density_color(level):
+        return {
+            "Low": (76, 175, 80),
+            "Medium": (0, 200, 255),
+            "High": (60, 60, 255),
+        }.get(level, WHITE)
+
+    def _draw_box(self, frame, x1, y1, x2, y2, label, color, draw_label=True):
+        """Draw a clean bounding box with an optional filled label chip."""
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, cv2.LINE_AA)
+
+        if not draw_label or not label:
+            return
+
+        scale = 0.5
+        thick = 1
+        (tw, th), _ = cv2.getTextSize(label, FONT, scale, thick)
+
+        # Label chip sits just above the box (or just below if no room on top)
+        chip_h = th + 8
+        if y1 - chip_h >= 0:
+            top = y1 - chip_h
+            bottom = y1
+        else:
+            top = y1
+            bottom = y1 + chip_h
+
+        right = min(x1 + tw + 10, frame.shape[1])
+        cv2.rectangle(frame, (x1, top), (right, bottom), color, -1, cv2.LINE_AA)
+        cv2.putText(
+            frame,
+            label,
+            (x1 + 5, bottom - 5),
+            FONT,
+            scale,
+            WHITE,
+            thick,
+            cv2.LINE_AA,
+        )
+
+    def _draw_stats_panel(self, frame, lines):
+        """Draw a translucent panel (top-left) with colored stat lines.
+
+        `lines` is a list of (text, color) tuples.
+        """
+        scale = 0.6
+        thick = 1
+        pad = 12
+        line_h = 26
+
+        max_w = 0
+        for text, _ in lines:
+            (tw, _th), _ = cv2.getTextSize(text, FONT, scale, thick)
+            max_w = max(max_w, tw)
+
+        box_w = max_w + pad * 2
+        box_h = line_h * len(lines) + pad
+
+        # Translucent dark background
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (10, 10), (10 + box_w, 10 + box_h), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+
+        y = 10 + pad + 12
+        for text, color in lines:
+            cv2.putText(frame, text, (10 + pad, y), FONT, scale, color, thick, cv2.LINE_AA)
+            y += line_h
+
+    def _draw_count_line(self, frame, line_y, width):
+        cv2.line(frame, (0, line_y), (width, line_y), (0, 255, 255), 2, cv2.LINE_AA)
+
+    def _build_panel(self, count_result, class_counts, density_level, processing_fps):
+        return [
+            (f"Total: {count_result['total_count']}", WHITE),
+            (f"Incoming: {count_result['incoming_count']}", WHITE),
+            (f"Outgoing: {count_result['outgoing_count']}", WHITE),
+            (f"Cars: {class_counts['car']}", CLASS_COLORS["car"]),
+            (f"Trucks: {class_counts['truck']}", CLASS_COLORS["truck"]),
+            (f"Buses: {class_counts['bus']}", CLASS_COLORS["bus"]),
+            (f"Motorcycles: {class_counts['motorcycle']}", CLASS_COLORS["motorcycle"]),
+            (f"Density: {density_level}", self._density_color(density_level)),
+            (f"FPS: {processing_fps:.2f}", WHITE),
+        ]
+
+    # ------------------------------------------------------------------
+    # Saved-video processing
+    # ------------------------------------------------------------------
     def process(self):
         # Fresh counter for every new uploaded video
         counter = VehicleCounter(
@@ -169,17 +285,15 @@ class VideoProcessor:
                     continue
 
                 # Draw count line
-                line_y = count_result["line_y"]
-                cv2.line(frame, (0, line_y), (width, line_y), (0, 255, 255), 2)
+                self._draw_count_line(frame, count_result["line_y"], width)
 
-                # Draw tracked objects
+                # Draw tracked objects (color-coded by class)
                 for obj in tracked_objects:
                     track_id = obj["track_id"]
                     x1, y1, x2, y2 = obj["bbox"]
                     class_name = obj.get("class_name", "vehicle")
 
-                    # Red box for accidents, green box for vehicles
-                    box_color = (0, 0, 255) if class_name == "accident" else (0, 255, 0)
+                    color = self._class_color(class_name)
 
                     # Save accident event to database
                     if class_name == "accident" and track_id not in saved_accident_ids:
@@ -194,20 +308,10 @@ class VideoProcessor:
 
                         saved_accident_ids.add(track_id)
 
-                    # Draw bounding box
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-
-                    # Draw label with class and tracking ID
-                    label = f"{class_name} ID:{track_id}"
-                    cv2.putText(
-                        frame,
-                        label,
-                        (x1, max(y1 - 10, 20)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        box_color,
-                        2,
-                    )
+                    # Hide label on tiny far-field boxes to avoid the smear
+                    draw_label = (y2 - y1) >= self.min_label_height
+                    label = f"{class_name} #{track_id}"
+                    self._draw_box(frame, x1, y1, x2, y2, label, color, draw_label)
 
                 # Calculate processing FPS
                 elapsed_time = time.time() - start_time
@@ -216,49 +320,21 @@ class VideoProcessor:
                 # Get vehicle class counts
                 class_counts = count_result["class_counts"]
 
-                # Save traffic snapshot every 100 frames
+                # Save traffic snapshot every 200 frames
                 if frame_id % 200 == 0:
                     save_snapshot(
                         db=db,
                         video_id=video_id,
                         total_count=count_result["total_count"],
-                        incoming_count=count_result["incoming_count"],
-                        outgoing_count=count_result["outgoing_count"],
-                        active_vehicles=active_vehicles,
-                        class_counts=class_counts,
-                        density_level=density_level,
                         fps=processing_fps,
                     )
                     print(f"Snapshot Saved @ Frame {frame_id}")
 
-                # Overlay settings
-                y = 40
-                gap = 35
-
-                overlay_items = [
-                    f"Total: {count_result['total_count']}",
-                    f"Incoming: {count_result['incoming_count']}",
-                    f"Outgoing: {count_result['outgoing_count']}",
-                    f"Cars: {class_counts['car']}",
-                    f"Trucks: {class_counts['truck']}",
-                    f"Buses: {class_counts['bus']}",
-                    f"Motorcycles: {class_counts['motorcycle']}",
-                    f"Density: {density_level}",
-                    f"FPS: {processing_fps:.2f}",
-                ]
-
-                # Draw overlay text
-                for item in overlay_items:
-                    cv2.putText(
-                        frame,
-                        item,
-                        (20, y),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (255, 255, 255),
-                        2,
-                    )
-                    y += gap
+                # Professional stats panel
+                panel = self._build_panel(
+                    count_result, class_counts, density_level, processing_fps
+                )
+                self._draw_stats_panel(frame, panel)
 
                 # Save processed frame
                 writer.write(frame)
@@ -305,18 +381,18 @@ class VideoProcessor:
             writer.release()
             db.close()
 
+    # ------------------------------------------------------------------
+    # Live MJPEG stream
+    # ------------------------------------------------------------------
     def generate_frames(self, stream_width=960, jpeg_quality=75, show_every=1):
         """
         BALANCED real-time live MJPEG generator.
 
-        Goal: look good (full overlay, decent resolution) but stay fast.
           * stream_width=960 + jpeg_quality=75 -> sharp enough, still small.
-          * Full overlay restored (all vehicle classes), like the saved video.
+          * Full overlay (color-coded boxes + stats panel), like the saved video.
           * NO database writes inside the loop -> Neon latency never stalls a
             frame. (The 'Process Video' button still saves everything.)
-          * Generator stops cleanly when the browser disconnects (GeneratorExit
-            in the finally block), so it never keeps churning in the background.
-          * show_every>1 drops frames if you want it even more 'live'.
+          * Generator stops cleanly when the browser disconnects.
 
         Tune from the endpoint, e.g.:
           generate_frames(stream_width=1280, jpeg_quality=85)  # higher quality
@@ -404,29 +480,18 @@ class VideoProcessor:
                     continue
 
                 # Draw count line
-                line_y = count_result["line_y"]
-                cv2.line(frame, (0, line_y), (stream_width, line_y), (0, 255, 255), 2)
+                self._draw_count_line(frame, count_result["line_y"], stream_width)
 
-                # Draw tracked objects
+                # Draw tracked objects (color-coded by class)
                 for obj in tracked_objects:
                     track_id = obj["track_id"]
                     x1, y1, x2, y2 = obj["bbox"]
                     class_name = obj.get("class_name", "vehicle")
 
-                    box_color = (0, 0, 255) if class_name == "accident" else (0, 255, 0)
-
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
-
-                    label = f"{class_name} ID:{track_id}"
-                    cv2.putText(
-                        frame,
-                        label,
-                        (x1, max(y1 - 10, 20)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.6,
-                        box_color,
-                        2,
-                    )
+                    color = self._class_color(class_name)
+                    draw_label = (y2 - y1) >= self.min_label_height
+                    label = f"{class_name} #{track_id}"
+                    self._draw_box(frame, x1, y1, x2, y2, label, color, draw_label)
 
                 # Live FPS
                 elapsed_time = time.time() - start_time
@@ -434,32 +499,11 @@ class VideoProcessor:
 
                 class_counts = count_result["class_counts"]
 
-                # FULL overlay (same info as the saved video)
-                y = 40
-                gap = 35
-                overlay_items = [
-                    f"Total: {count_result['total_count']}",
-                    f"Incoming: {count_result['incoming_count']}",
-                    f"Outgoing: {count_result['outgoing_count']}",
-                    f"Cars: {class_counts['car']}",
-                    f"Trucks: {class_counts['truck']}",
-                    f"Buses: {class_counts['bus']}",
-                    f"Motorcycles: {class_counts['motorcycle']}",
-                    f"Density: {density_level}",
-                    f"FPS: {processing_fps:.2f}",
-                ]
-
-                for item in overlay_items:
-                    cv2.putText(
-                        frame,
-                        item,
-                        (20, y),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (255, 255, 255),
-                        2,
-                    )
-                    y += gap
+                # Professional stats panel (same info as the saved video)
+                panel = self._build_panel(
+                    count_result, class_counts, density_level, processing_fps
+                )
+                self._draw_stats_panel(frame, panel)
 
                 # Encode and yield
                 ok, buffer = cv2.imencode(".jpg", frame, jpeg_params)

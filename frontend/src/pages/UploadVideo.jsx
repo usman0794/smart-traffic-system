@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import api from "../services/api";
 import {
   FaUpload,
@@ -15,6 +15,10 @@ import {
 } from "react-icons/fa";
 import { MdCloudUpload, MdVideoSettings } from "react-icons/md";
 
+// localStorage keys used to keep state across navigation / reloads
+const LS_FILENAME = "uploadedFilename";
+const LS_PROCESSED = "processedVideo";
+
 export default function UploadVideo() {
   const [file, setFile] = useState(null);
   const [filename, setFilename] = useState("");
@@ -28,6 +32,23 @@ export default function UploadVideo() {
   const [processedFile, setProcessedFile] = useState("");
   const fileInputRef = useRef(null);
   const processAbortRef = useRef(null);
+
+  // Restore previous upload / processed video when the page mounts
+  // (so the Download button survives navigating to the dashboard and back).
+  useEffect(() => {
+    const savedFilename = localStorage.getItem(LS_FILENAME);
+    const savedProcessed = localStorage.getItem(LS_PROCESSED);
+
+    if (savedFilename) {
+      setFilename(savedFilename);
+    }
+
+    if (savedProcessed) {
+      setProcessedFile(savedProcessed);
+      setMessage("Your previously processed video is ready to download.");
+      setMessageType("success");
+    }
+  }, []);
 
   const handleFileChange = (e) => {
     handleFileSelect(e.target.files[0]);
@@ -51,9 +72,10 @@ export default function UploadVideo() {
     // Stop anything running and clear previous result
     stopAll(true);
     setProcessedFile("");
+    localStorage.removeItem(LS_PROCESSED);
+    localStorage.removeItem(LS_FILENAME);
     setFile(selectedFile);
     setFilename("");
-    localStorage.setItem("resetDashboard", "true");
     setMessage(
       `Selected: ${selectedFile.name} (${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB)`,
     );
@@ -80,6 +102,8 @@ export default function UploadVideo() {
     setMessage("");
     setMessageType("info");
     setProcessedFile("");
+    localStorage.removeItem(LS_PROCESSED);
+    localStorage.removeItem(LS_FILENAME);
 
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
@@ -96,7 +120,7 @@ export default function UploadVideo() {
     try {
       setUploading(true);
       setProcessedFile("");
-      localStorage.setItem("resetDashboard", "true");
+      localStorage.removeItem(LS_PROCESSED);
       setMessage("Uploading video...");
       setMessageType("info");
 
@@ -116,6 +140,7 @@ export default function UploadVideo() {
       });
 
       setFilename(res.data.filename);
+      localStorage.setItem(LS_FILENAME, res.data.filename);
       setMessage(`Uploaded successfully: ${res.data.filename}`);
       setMessageType("success");
       setFile(null);
@@ -148,6 +173,7 @@ export default function UploadVideo() {
     try {
       setProcessing(true);
       setProcessedFile("");
+      localStorage.removeItem(LS_PROCESSED);
       setMessage("Processing video... This may take several minutes.");
       setMessageType("info");
 
@@ -159,8 +185,10 @@ export default function UploadVideo() {
         signal: controller.signal,
       });
 
-      const downloadName = res.data.download_name || `processed_${filename}`;
+      const downloadName =
+        (res.data && res.data.download_name) || `processed_${filename}`;
       setProcessedFile(downloadName);
+      localStorage.setItem(LS_PROCESSED, downloadName);
 
       setMessage("Processing complete! Your video is ready to download.");
       setMessageType("success");
@@ -223,6 +251,8 @@ export default function UploadVideo() {
     setProcessedFile("");
     setFile(null);
     setFilename("");
+    localStorage.removeItem(LS_PROCESSED);
+    localStorage.removeItem(LS_FILENAME);
     setMessage("Stopped. Ready for a new video.");
     setMessageType("info");
 
@@ -573,7 +603,7 @@ export default function UploadVideo() {
                       : "text-gray-400"
                   }
                 >
-                  {file ? file.name : "None selected"}
+                  {file ? file.name : filename || "None selected"}
                 </span>
               </div>
 
@@ -603,6 +633,19 @@ export default function UploadVideo() {
                   }
                 >
                   {processing ? "In progress..." : "Ready"}
+                </span>
+              </div>
+
+              <div className="flex justify-between gap-4">
+                <span className="text-gray-500">Download</span>
+                <span
+                  className={
+                    processedFile
+                      ? "text-emerald-600 font-medium"
+                      : "text-gray-400"
+                  }
+                >
+                  {processedFile ? "Available" : "Not ready"}
                 </span>
               </div>
             </div>
