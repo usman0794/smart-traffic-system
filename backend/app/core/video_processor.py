@@ -57,7 +57,7 @@ class VideoProcessor:
 
         # Speed optimization settings
         # Process frame only
-        self.frame_skip = 2
+        self.frame_skip = 1
 
         # Resize video frame before YOLO inference
         self.resize_width = 640

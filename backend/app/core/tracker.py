@@ -22,7 +22,7 @@ class VehicleTracker:
         use_gpu = torch.cuda.is_available()
 
         self.tracker = DeepSort(
-            max_age=45,               # was 15 -> keep lost tracks ~3x longer
+            max_age=60,               # was 15 -> keep lost tracks ~3x longer
             n_init=3,                 # confirm after 3 hits (fewer ghost IDs)
             max_iou_distance=0.7,     # motion/position gating
             max_cosine_distance=0.3,  # appearance gating (re-id same car)
